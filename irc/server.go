@@ -36,6 +36,7 @@ import (
 	"github.com/ergochat/ergo/irc/mysql"
 	"github.com/ergochat/ergo/irc/postgresql"
 	"github.com/ergochat/ergo/irc/sno"
+	"github.com/ergochat/ergo/irc/pebblehistory"
 	"github.com/ergochat/ergo/irc/sqlite"
 	"github.com/ergochat/ergo/irc/utils"
 	"github.com/ergochat/ergo/irc/webpush"
@@ -97,6 +98,7 @@ type Server struct {
 	mysqlHistoryDB    *mysql.MySQL
 	postgresHistoryDB *postgresql.PostgreSQL
 	sqliteHistoryDB   *sqlite.SQLite
+	pebbleHistoryDB   *pebblehistory.Pebble
 	historyDB         history.Database
 	torLimiter        connection_limits.TorLimiter
 	whoWas            WhoWasList
@@ -843,6 +845,11 @@ func (server *Server) applyConfig(config *Config) (err error) {
 				server.sqliteHistoryDB.SetConfig(config.Datastore.SQLite)
 			}
 		}
+		if config.Datastore.Pebble.Enabled && server.pebbleHistoryDB != nil {
+			if config.Datastore.Pebble != oldConfig.Datastore.Pebble {
+				server.pebbleHistoryDB.SetConfig(config.Datastore.Pebble)
+			}
+		}
 	}
 
 	// now that the datastore is initialized, we can load the cloak secret from it
@@ -1077,6 +1084,13 @@ func (server *Server) loadFromDatastore(config *Config) (err error) {
 			return err
 		}
 		server.historyDB = server.sqliteHistoryDB
+	} else if config.Datastore.Pebble.Enabled {
+		server.pebbleHistoryDB, err = pebblehistory.NewPebbleDatabase(server.logger, config.Datastore.Pebble)
+		if err != nil {
+			server.logger.Error("internal", "could not open pebble history database", err.Error())
+			return err
+		}
+		server.historyDB = server.pebbleHistoryDB
 	} else {
 		server.historyDB = history.NewNoopDatabase()
 	}

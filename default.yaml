@@ -919,6 +919,18 @@ datastore:
         # maximum concurrent connections
         max-conns: 1
 
+    # embedded Pebble key-value store (currently only used for persistent history).
+    # needs no external database server; history lives in a local directory.
+    pebble:
+        enabled: false
+        # directory holding the Pebble database
+        path: "ergo_history.pebble"
+        # fsync every write. when false, writes survive an ergo crash but the
+        # last moments of history may be lost on an OS crash or power loss
+        sync: false
+        # block cache size in megabytes
+        cache-size-mb: 64
+
 # languages config
 languages:
     # whether to load languages
@@ -1117,8 +1129,8 @@ history:
         # users to query history after disconnections.
         grace-period: 1h
 
-    # options to store history messages in a persistent database (MySQL, PostgreSQL
-    # or SQLite). in order to enable any of this functionality, you must configure
+    # options to store history messages in a persistent database (MySQL, PostgreSQL,
+    # SQLite, or Pebble). in order to enable any of this functionality, you must configure
     # one of those databases above. enabling persistence overrides the history
     # size limits above (`channel-length`, `client-length`, etc.); persistent
     # history has no limits other than those imposed by expire-time.

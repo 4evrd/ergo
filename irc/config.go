@@ -42,6 +42,7 @@ import (
 	"github.com/ergochat/ergo/irc/oauth2"
 	"github.com/ergochat/ergo/irc/passwd"
 	"github.com/ergochat/ergo/irc/postgresql"
+	"github.com/ergochat/ergo/irc/pebblehistory"
 	"github.com/ergochat/ergo/irc/sqlite"
 	"github.com/ergochat/ergo/irc/utils"
 	"github.com/ergochat/ergo/irc/webpush"
@@ -678,6 +679,7 @@ type Config struct {
 		MySQL       mysql.Config
 		PostgreSQL  postgresql.Config
 		SQLite      sqlite.Config
+		Pebble      pebblehistory.Config
 	}
 
 	Accounts AccountConfig
@@ -1328,6 +1330,9 @@ func LoadConfig(filename string) (config *Config, err error) {
 	if config.Datastore.SQLite.Enabled {
 		enabledBackends++
 	}
+	if config.Datastore.Pebble.Enabled {
+		enabledBackends++
+	}
 	if enabledBackends > 1 {
 		return nil, fmt.Errorf("cannot enable multiple history database backends simultaneously")
 	}
@@ -1737,8 +1742,8 @@ func LoadConfig(filename string) (config *Config, err error) {
 		config.History.Persistent.DirectMessages = PersistentDisabled
 	}
 
-	if config.History.Persistent.Enabled && !config.Datastore.MySQL.Enabled && !config.Datastore.PostgreSQL.Enabled && !config.Datastore.SQLite.Enabled {
-		return nil, fmt.Errorf("You must configure a MySQL, PostgreSQL, or SQLite database in order to enable persistent history")
+	if config.History.Persistent.Enabled && !config.Datastore.MySQL.Enabled && !config.Datastore.PostgreSQL.Enabled && !config.Datastore.SQLite.Enabled && !config.Datastore.Pebble.Enabled {
+		return nil, fmt.Errorf("You must configure a MySQL, PostgreSQL, SQLite, or Pebble database in order to enable persistent history")
 	}
 
 	if config.History.ZNCMax == 0 {
@@ -1787,6 +1792,9 @@ func LoadConfig(filename string) (config *Config, err error) {
 	// and for sqlite
 	config.Datastore.SQLite.ExpireTime = time.Duration(config.History.Restrictions.ExpireTime)
 	config.Datastore.SQLite.TrackAccountMessages = config.History.Retention.EnableAccountIndexing
+	// and for pebble
+	config.Datastore.Pebble.ExpireTime = time.Duration(config.History.Restrictions.ExpireTime)
+	config.Datastore.Pebble.TrackAccountMessages = config.History.Retention.EnableAccountIndexing
 
 	config.Server.Cloaks.Initialize()
 	if config.Server.Cloaks.Enabled {

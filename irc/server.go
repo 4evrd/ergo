@@ -26,6 +26,7 @@ import (
 
 	"github.com/ergochat/ergo/irc/bunt"
 	"github.com/ergochat/ergo/irc/caps"
+	"github.com/ergochat/ergo/irc/cluster"
 	"github.com/ergochat/ergo/irc/connection_limits"
 	"github.com/ergochat/ergo/irc/datastore"
 	"github.com/ergochat/ergo/irc/flatip"
@@ -99,6 +100,7 @@ type Server struct {
 	postgresHistoryDB *postgresql.PostgreSQL
 	sqliteHistoryDB   *sqlite.SQLite
 	pebbleHistoryDB   *pebblehistory.Pebble
+	cluster           *cluster.Cluster
 	historyDB         history.Database
 	torLimiter        connection_limits.TorLimiter
 	whoWas            WhoWasList
@@ -175,6 +177,10 @@ func (server *Server) Shutdown() {
 
 	if err := server.historyDB.Close(); err != nil {
 		server.logger.Error("shutdown", "Could not close history database", err.Error())
+	}
+
+	if server.cluster != nil {
+		server.cluster.Close()
 	}
 	server.logger.Info("server", fmt.Sprintf("%s exiting", Ver))
 }
@@ -737,6 +743,8 @@ func (server *Server) applyConfig(config *Config) (err error) {
 			return fmt.Errorf("UTF-8 enforcement cannot be changed after launching the server, rehash aborted")
 		} else if oldConfig.Accounts.Multiclient.AlwaysOn != config.Accounts.Multiclient.AlwaysOn {
 			return fmt.Errorf("Default always-on setting cannot be changed after launching the server, rehash aborted")
+		} else if !oldConfig.Cluster.Equal(&config.Cluster) {
+			return fmt.Errorf("Cluster configuration cannot be changed after launching the server, rehash aborted")
 		} else if oldConfig.Server.Relaymsg.Enabled != config.Server.Relaymsg.Enabled {
 			return fmt.Errorf("Cannot enable or disable relaying after launching the server, rehash aborted")
 		} else if oldConfig.Server.Relaymsg.Separators != config.Server.Relaymsg.Separators {
@@ -1093,6 +1101,17 @@ func (server *Server) loadFromDatastore(config *Config) (err error) {
 		server.historyDB = server.pebbleHistoryDB
 	} else {
 		server.historyDB = history.NewNoopDatabase()
+	}
+
+	if config.Cluster.Enabled {
+		server.cluster, err = cluster.Start(server.logger, config.Cluster)
+		if err != nil {
+			server.logger.Error("internal", "could not start cluster", err.Error())
+			return err
+		}
+		if config.Cluster.History.Enabled && server.pebbleHistoryDB != nil {
+			server.historyDB = server.cluster.ReplicateHistory(server.historyDB)
+		}
 	}
 
 	return nil

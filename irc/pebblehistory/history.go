@@ -20,6 +20,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -36,10 +37,21 @@ const (
 	latestSchema = "1"
 
 	cleanupBatchSize = 500
-	cleanupPauseTime = 10 * time.Minute
 
 	defaultCacheSizeMB = 64
 )
+
+// how long the background loops pause between runs (a var so tests can shorten it)
+var cleanupPauseTime = 10 * time.Minute
+
+// test hook, called at the top of each background loop iteration
+var loopHook atomic.Pointer[func(loop string)]
+
+func runLoopHook(loop string) {
+	if hook := loopHook.Load(); hook != nil {
+		(*hook)(loop)
+	}
+}
 
 // Key prefixes. Variable-length components are encoded with a uint16 length
 // prefix (see appendStr), and timestamps as big-endian uint64 nanoseconds, so
@@ -104,6 +116,7 @@ type Pebble struct {
 
 	wakeForgetter chan e
 	stop          chan e
+	pause         time.Duration
 }
 
 var _ history.Database = (*Pebble)(nil)
@@ -113,6 +126,7 @@ func NewPebbleDatabase(logger *logger.Manager, config Config) (*Pebble, error) {
 		logger:        logger,
 		wakeForgetter: make(chan e, 1),
 		stop:          make(chan e),
+		pause:         cleanupPauseTime,
 	}
 	p.SetConfig(config)
 	if err := p.open(); err != nil {
@@ -530,12 +544,13 @@ func (p *Pebble) cleanupLoop() {
 		if r := recover(); r != nil {
 			p.logger.Error("pebble",
 				fmt.Sprintf("Panic in cleanup routine: %v\n%s", r, debug.Stack()))
-			time.Sleep(cleanupPauseTime)
+			time.Sleep(p.pause)
 			go p.cleanupLoop()
 		}
 	}()
 
 	for {
+		runLoopHook("cleanup")
 		if expireTime := p.getConfig().ExpireTime; expireTime != 0 {
 			for {
 				count, err := p.doCleanup(time.Now().Add(-expireTime))
@@ -547,7 +562,7 @@ func (p *Pebble) cleanupLoop() {
 		select {
 		case <-p.stop:
 			return
-		case <-time.After(cleanupPauseTime):
+		case <-time.After(p.pause):
 		}
 	}
 }
@@ -609,12 +624,13 @@ func (p *Pebble) forgetLoop() {
 		if r := recover(); r != nil {
 			p.logger.Error("pebble",
 				fmt.Sprintf("Panic in forget routine: %v\n%s", r, debug.Stack()))
-			time.Sleep(cleanupPauseTime)
+			time.Sleep(p.pause)
 			go p.forgetLoop()
 		}
 	}()
 
 	for {
+		runLoopHook("forget")
 		for {
 			found, err := p.doForget()
 			if p.logError("error processing forget", err) {
@@ -624,7 +640,7 @@ func (p *Pebble) forgetLoop() {
 				select {
 				case <-p.stop:
 					return
-				case <-time.After(cleanupPauseTime):
+				case <-time.After(p.pause):
 				}
 			}
 			if !found {

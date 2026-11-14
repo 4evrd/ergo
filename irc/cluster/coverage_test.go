@@ -176,6 +176,20 @@ func TestStartupTimeout(t *testing.T) {
 	t.Log(err)
 }
 
+func TestJetStreamFailsAfterListenersAreUp(t *testing.T) {
+	// clustered JetStream without routes fails once the listeners are already
+	// up; startup must notice and fail rather than run without JetStream
+	config := Config{Enabled: true, NodeName: "a", Embedded: EmbeddedConfig{
+		StoreDir:    t.TempDir(),
+		ClusterName: "ergo",
+		Listen:      fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+	}}
+	if c, err := Start(quietLogger(), config); err == nil {
+		c.Close()
+		t.Fatal("expected JetStream startup failure")
+	}
+}
+
 func TestExternalNATSAndReconnect(t *testing.T) {
 	port := freePort(t)
 	ns := external(t, port, true)
@@ -395,7 +409,7 @@ func TestForgetReplicates(t *testing.T) {
 }
 
 func TestNatsLogger(t *testing.T) {
-	l := natsLogger{quietLogger()}
+	l := &natsLogger{logger: quietLogger()}
 	l.Noticef("n %d", 1)
 	l.Warnf("w %d", 1)
 	l.Errorf("e %d", 1)
@@ -450,6 +464,7 @@ func TestConfigValidationBranches(t *testing.T) {
 		"invalid listen":        {Embedded: EmbeddedConfig{Listen: "nope"}},
 		"invalid client listen": {Embedded: EmbeddedConfig{ClientListen: "nope"}},
 		"client creds mismatch": {Embedded: EmbeddedConfig{ClientUsername: "u"}},
+		"listen without routes": {Embedded: EmbeddedConfig{Listen: "0.0.0.0:6222"}},
 		"invalid route":         {Embedded: EmbeddedConfig{Listen: "0.0.0.0:6222", Routes: []string{"://bad"}}},
 	}
 	for name, c := range bad {
@@ -466,7 +481,8 @@ func TestConfigValidationBranches(t *testing.T) {
 	assertEqual(t, ext.Embedded.StoreDir, "")
 
 	clustered := Config{Enabled: true, NodeName: "a", Replicas: 3, History: HistoryConfig{StreamMaxAge: time.Minute},
-		Embedded: EmbeddedConfig{Listen: "0.0.0.0:6222", ClientListen: "127.0.0.1:4222", ClientUsername: "u", ClientPassword: "p"}}
+		Embedded: EmbeddedConfig{Listen: "0.0.0.0:6222", Routes: []string{"nats-route://a:6222", "nats-route://b:6222"},
+			ClientListen: "127.0.0.1:4222", ClientUsername: "u", ClientPassword: "p"}}
 	assertEqual(t, clustered.Postprocess(), nil)
 	assertEqual(t, clustered.Embedded.ClusterName, "ergo")
 	assertEqual(t, clustered.History.StreamMaxAge, time.Minute) // explicit value kept

@@ -18,12 +18,15 @@ type ClientManager struct {
 	sync.RWMutex // tier 2
 	byNick       map[string]*Client
 	bySkeleton   map[string]*Client
+	// clients by cluster nick key (see clusterNickKey)
+	byClusterKey map[string]*Client
 }
 
 // Initialize initializes a ClientManager.
 func (clients *ClientManager) Initialize() {
 	clients.byNick = make(map[string]*Client)
 	clients.bySkeleton = make(map[string]*Client)
+	clients.byClusterKey = make(map[string]*Client)
 }
 
 // Get retrieves a client from the manager, if they exist.
@@ -42,6 +45,10 @@ func (clients *ClientManager) removeInternal(client *Client, oldcfnick, oldskele
 	// requires holding the writable Lock()
 	if oldcfnick == "*" || oldcfnick == "" {
 		return errNickMissing
+	}
+
+	if key := clusterNickKey(oldcfnick); clients.byClusterKey[key] == client {
+		delete(clients.byClusterKey, key)
 	}
 
 	currentEntry, present := clients.byNick[oldcfnick]
@@ -73,12 +80,41 @@ func (clients *ClientManager) removeInternal(client *Client, oldcfnick, oldskele
 }
 
 // Remove removes a client from the lookup set.
-func (clients *ClientManager) Remove(client *Client) error {
-	clients.Lock()
-	defer clients.Unlock()
-
+func (clients *ClientManager) Remove(client *Client) (err error) {
 	oldcfnick, oldskeleton := client.uniqueIdentifiers()
-	return clients.removeInternal(client, oldcfnick, oldskeleton)
+	oldKey := clusterNickKey(oldcfnick)
+	cn := client.server.clusterNicks
+	if cn != nil {
+		unlock := cn.lock(oldKey)
+		defer unlock()
+	}
+
+	clients.Lock()
+	err = clients.removeInternal(client, oldcfnick, oldskeleton)
+	clients.Unlock()
+
+	if cn != nil && err == nil {
+		cn.release(oldKey)
+	}
+	return err
+}
+
+// getByClusterKey returns the local client holding a cluster nick key, if any.
+func (clients *ClientManager) getByClusterKey(key string) *Client {
+	clients.RLock()
+	defer clients.RUnlock()
+	return clients.byClusterKey[key]
+}
+
+// clusterKeySnapshot returns a copy of the cluster nick key map.
+func (clients *ClientManager) clusterKeySnapshot() map[string]*Client {
+	clients.RLock()
+	defer clients.RUnlock()
+	result := make(map[string]*Client, len(clients.byClusterKey))
+	for key, client := range clients.byClusterKey {
+		result[key] = client
+	}
+	return result
 }
 
 // SetNick sets a client's nickname, validating it against nicknames in use
@@ -187,6 +223,36 @@ func (clients *ClientManager) SetNick(client *Client, session *Session, newNick 
 		}
 	}
 
+	// in a cluster, claim the nick network-wide first. this happens outside
+	// clients.Lock (it's a network round trip), but under the stripe locks
+	// for both skeletons, so concurrent local changes to them serialize
+	var committed bool
+	newKey := clusterNickKey(newCfNick)
+	if cn := client.server.clusterNicks; cn != nil && !dryRun {
+		formercfnick, _ := client.uniqueIdentifiers()
+		formerKey := clusterNickKey(formercfnick)
+		unlock := cn.lock(formerKey, newKey)
+		defer unlock()
+		// an always-on client being restored at startup has no sessions:
+		// let it through if the registry is down (reconciliation claims the
+		// nick, or renames the client, once it's back). everything else
+		// fails closed rather than risk a duplicate nick
+		restoring := session == nil && len(client.Sessions()) == 0
+		acquired, claimErr := cn.claim(newKey, newNick, accountName, restoring)
+		if claimErr != nil {
+			return "", claimErr, false
+		}
+		defer func() {
+			if committed {
+				if formerKey != newKey {
+					cn.release(formerKey)
+				}
+			} else if acquired {
+				cn.release(newKey)
+			}
+		}()
+	}
+
 	clients.Lock()
 	defer clients.Unlock()
 
@@ -233,6 +299,8 @@ func (clients *ClientManager) SetNick(client *Client, session *Session, newNick 
 	clients.removeInternal(client, formercfnick, formerskeleton)
 	clients.byNick[newCfNick] = client
 	clients.bySkeleton[newSkeleton] = client
+	clients.byClusterKey[newKey] = client
+	committed = true
 	return newNick, nil, false
 }
 

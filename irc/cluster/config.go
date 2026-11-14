@@ -34,6 +34,8 @@ type Config struct {
 
 	History HistoryConfig
 
+	Nicks NicksConfig
+
 	// XXX this is copied from elsewhere in the config:
 	HistoryExpireTime time.Duration `yaml:"-"`
 }
@@ -69,10 +71,25 @@ type HistoryConfig struct {
 	StreamMaxAge time.Duration `yaml:"stream-max-age"`
 }
 
+type NicksConfig struct {
+	// enforce nickname uniqueness across the whole cluster
+	Enabled bool
+	// a node whose heartbeat is older than this is considered gone, and
+	// other nodes may take over its nicks (default 15s)
+	NodeTimeout time.Duration `yaml:"node-timeout"`
+	// how often each node checks its nick claims against its local clients
+	// (default 30s)
+	ReconcileInterval time.Duration `yaml:"reconcile-interval"`
+	// how long startup waits for the nick registry before accepting
+	// connections anyway (default 10s)
+	StartupWait time.Duration `yaml:"startup-wait"`
+}
+
 // Equal reports whether two configs are identical.
 func (c *Config) Equal(o *Config) bool {
 	return c.Enabled == o.Enabled && c.NodeName == o.NodeName && c.URL == o.URL &&
 		c.CredsFile == o.CredsFile && c.Replicas == o.Replicas && c.History == o.History &&
+		c.Nicks == o.Nicks &&
 		c.HistoryExpireTime == o.HistoryExpireTime &&
 		c.Embedded.StoreDir == o.Embedded.StoreDir && c.Embedded.ClusterName == o.Embedded.ClusterName &&
 		c.Embedded.Listen == o.Embedded.Listen && slices.Equal(c.Embedded.Routes, o.Embedded.Routes) &&
@@ -110,6 +127,11 @@ func (c *Config) Postprocess() error {
 			if _, _, err := net.SplitHostPort(e.Listen); err != nil {
 				return fmt.Errorf("invalid cluster.embedded.listen: %w", err)
 			}
+			if len(e.Routes) == 0 {
+				// JetStream won't start clustered without routes; listing
+				// every node (including this one) on every node is fine
+				return errors.New("cluster.embedded.listen requires cluster.embedded.routes (list every node, including this one)")
+			}
 			if (e.RouteUsername == "") != (e.RoutePassword == "") {
 				return errors.New("cluster.embedded.route-username and route-password must be set together")
 			}
@@ -131,6 +153,19 @@ func (c *Config) Postprocess() error {
 				return fmt.Errorf("invalid cluster.embedded.client-listen: %w", err)
 			}
 		}
+	}
+	if c.Nicks.NodeTimeout == 0 {
+		c.Nicks.NodeTimeout = defaultNodeTimeout
+	} else if c.Nicks.NodeTimeout < 3*time.Second {
+		return errors.New("cluster.nicks.node-timeout must be at least 3s")
+	}
+	if c.Nicks.ReconcileInterval == 0 {
+		c.Nicks.ReconcileInterval = 30 * time.Second
+	} else if c.Nicks.ReconcileInterval < time.Second {
+		return errors.New("cluster.nicks.reconcile-interval must be at least 1s")
+	}
+	if c.Nicks.StartupWait == 0 {
+		c.Nicks.StartupWait = 30 * time.Second
 	}
 	if c.History.StreamMaxAge == 0 {
 		c.History.StreamMaxAge = c.HistoryExpireTime

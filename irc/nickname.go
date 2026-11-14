@@ -72,6 +72,12 @@ func performNickChange(server *Server, client *Client, target *Client, session *
 		} else {
 			rb.Add(nil, server.name, "FAIL", "SANICK", "NICKNAME_INVALID", utils.SafeErrorParam(nickname), client.t("No nickname given"))
 		}
+	} else if err == errNickUnavailable {
+		if !isSanick {
+			rb.Add(nil, server.name, ERR_UNAVAILRESOURCE, details.nick, utils.SafeErrorParam(nickname), client.t("Nickname is temporarily unavailable"))
+		} else {
+			rb.Add(nil, server.name, "FAIL", "SANICK", "NICKNAME_UNAVAILABLE", utils.SafeErrorParam(nickname), client.t("Nickname is temporarily unavailable"))
+		}
 	} else if err == errNoop {
 		if !isSanick {
 			// no message

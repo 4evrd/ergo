@@ -903,8 +903,9 @@ datastore:
         cache-size-mb: 64
 
 # clustering: run several ergo nodes as one network, connected over NATS.
-# currently this replicates persistent history between nodes (each node must
-# use the Pebble backend); clients on different nodes don't see each other yet.
+# currently this enforces nickname uniqueness across nodes and replicates
+# persistent history between them (each node must use the Pebble backend).
+# clients on different nodes don't see each other yet.
 cluster:
     enabled: false
 
@@ -925,8 +926,10 @@ cluster:
         # address for connections from other nodes; leave empty to run a
         # single node
         #listen: "0.0.0.0:6222"
-        # the `listen` addresses of the other nodes
+        # the `listen` addresses of every node in the cluster, this one
+        # included (required with `listen`)
         #routes:
+        #    - "nats-route://node1.example.com:6222"
         #    - "nats-route://node2.example.com:6222"
         #    - "nats-route://node3.example.com:6222"
         # shared credentials nodes use to authenticate to each other. node
@@ -950,6 +953,20 @@ cluster:
         # back a new or long-offline node can catch up. defaults to the history
         # expire-time; 0 with no expire-time keeps everything
         #stream-max-age: 168h
+
+    nicks:
+        # enforce nickname uniqueness across all nodes. if the cluster can't
+        # be reached (e.g. this node is cut off from the others), new nicks
+        # are refused with ERR_UNAVAILRESOURCE rather than risk duplicates
+        enabled: true
+        # a node that hasn't sent a heartbeat for this long is considered
+        # gone, and other nodes may take over its nicknames
+        node-timeout: 15s
+        # how often each node checks its nickname claims. if another node
+        # took a nick while this node was cut off, the local user is renamed
+        reconcile-interval: 30s
+        # how long startup waits for the nickname registry
+        startup-wait: 30s
 
 # languages config
 languages:

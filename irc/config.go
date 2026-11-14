@@ -29,6 +29,7 @@ import (
 
 	"github.com/ergochat/ergo/irc/caps"
 	"github.com/ergochat/ergo/irc/cloaks"
+	"github.com/ergochat/ergo/irc/cluster"
 	"github.com/ergochat/ergo/irc/connection_limits"
 	"github.com/ergochat/ergo/irc/custime"
 	"github.com/ergochat/ergo/irc/email"
@@ -672,6 +673,8 @@ type Config struct {
 	languageManager *languages.Manager
 
 	LockFile string `yaml:"lock-file"`
+
+	Cluster cluster.Config
 
 	Datastore struct {
 		Path        string
@@ -1795,6 +1798,21 @@ func LoadConfig(filename string) (config *Config, err error) {
 	// and for pebble
 	config.Datastore.Pebble.ExpireTime = time.Duration(config.History.Restrictions.ExpireTime)
 	config.Datastore.Pebble.TrackAccountMessages = config.History.Retention.EnableAccountIndexing
+
+	config.Cluster.HistoryExpireTime = time.Duration(config.History.Restrictions.ExpireTime)
+	if err = config.Cluster.Postprocess(); err != nil {
+		return nil, err
+	}
+	if config.Cluster.History.Enabled {
+		if !config.Cluster.Enabled {
+			return nil, fmt.Errorf("cluster.history.enabled requires cluster.enabled")
+		}
+		// replicated events may be delivered more than once; only the Pebble
+		// backend makes inserts idempotent
+		if config.History.Persistent.Enabled && !config.Datastore.Pebble.Enabled {
+			return nil, fmt.Errorf("cluster history replication requires the Pebble history backend (datastore.pebble)")
+		}
+	}
 
 	config.Server.Cloaks.Initialize()
 	if config.Server.Cloaks.Enabled {

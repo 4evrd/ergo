@@ -86,15 +86,23 @@ func pebbleEdits(dir string) map[string]string {
 	}
 }
 
-func clusterSection(dir, node string) string {
-	return fmt.Sprintf(`cluster:
-    enabled: true
-    node-name: %s
-    embedded:
-        store-dir: %q
-    history:
-        enabled: true
-`, node, filepath.Join(dir, "nats"))
+// clusterSection enables clustering by editing the documented cluster section
+func clusterSection(dir, node string) map[string]string {
+	return map[string]string{
+		"cluster:\n    enabled: false":   "cluster:\n    enabled: true",
+		`    node-name: "node1"`:         fmt.Sprintf("    node-name: %q", node),
+		`        store-dir: "nats-data"`: fmt.Sprintf("        store-dir: %q", filepath.Join(dir, "nats")),
+	}
+}
+
+func merge(maps ...map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, m := range maps {
+		for k, v := range m {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func TestClusterConfigValidation(t *testing.T) {
@@ -104,13 +112,12 @@ func TestClusterConfigValidation(t *testing.T) {
 		extra string
 		want  string
 	}{
-		"history replication without cluster": {
-			extra: "cluster:\n    history:\n        enabled: true\n",
-			want:  "cluster.history.enabled requires cluster.enabled",
-		},
 		"invalid node name": {
-			extra: "cluster:\n    enabled: true\n    node-name: \"bad name\"\n",
-			want:  "cluster.node-name",
+			edits: map[string]string{
+				"cluster:\n    enabled: false": "cluster:\n    enabled: true",
+				`    node-name: "node1"`:       `    node-name: "bad name"`,
+			},
+			want: "cluster.node-name",
 		},
 		"persistent history without a backend": {
 			edits: map[string]string{
@@ -126,8 +133,13 @@ func TestClusterConfigValidation(t *testing.T) {
 		}
 	}
 
+	// the shipped default (clustering off, history replication on) is valid
+	if _, err := LoadConfig(writeTestConfig(t, dir, nil, "")); err != nil {
+		t.Errorf("default config should load: %v", err)
+	}
+
 	// a valid pebble + cluster config loads, with derived settings filled in
-	config, err := LoadConfig(writeTestConfig(t, dir, pebbleEdits(dir), clusterSection(dir, "node1")))
+	config, err := LoadConfig(writeTestConfig(t, dir, merge(pebbleEdits(dir), clusterSection(dir, "node1")), ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +182,7 @@ func startTestServer(t *testing.T, dir string, configPath string) *Server {
 
 func TestServerWithPebbleAndCluster(t *testing.T) {
 	dir := t.TempDir()
-	server := startTestServer(t, dir, writeTestConfig(t, dir, pebbleEdits(dir), clusterSection(dir, "node1")))
+	server := startTestServer(t, dir, writeTestConfig(t, dir, merge(pebbleEdits(dir), clusterSection(dir, "node1")), ""))
 
 	if server.pebbleHistoryDB == nil || server.cluster == nil {
 		t.Fatal("expected pebble history and a cluster connection")
@@ -191,7 +203,7 @@ func TestServerWithPebbleAndCluster(t *testing.T) {
 	// config is refused
 	edits := pebbleEdits(dir)
 	edits["        cache-size-mb: 64"] = "        cache-size-mb: 32"
-	newConfig, err := LoadConfig(writeTestConfig(t, dir, edits, clusterSection(dir, "node1")))
+	newConfig, err := LoadConfig(writeTestConfig(t, dir, merge(edits, clusterSection(dir, "node1")), ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +211,7 @@ func TestServerWithPebbleAndCluster(t *testing.T) {
 	if err := server.applyConfig(newConfig); err != nil {
 		t.Fatalf("rehash failed: %v", err)
 	}
-	renamed, err := LoadConfig(writeTestConfig(t, dir, pebbleEdits(dir), clusterSection(dir, "node2")))
+	renamed, err := LoadConfig(writeTestConfig(t, dir, merge(pebbleEdits(dir), clusterSection(dir, "node2")), ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,8 +253,10 @@ func TestServerStartupFailures(t *testing.T) {
 
 	// the cluster can't start when its NATS server is unreachable
 	dir2 := t.TempDir()
-	extra := "cluster:\n    enabled: true\n    node-name: node1\n    url: \"nats://127.0.0.1:1\"\n"
-	config, err = LoadConfig(writeTestConfig(t, dir2, pebbleEdits(dir2), extra))
+	edits := merge(pebbleEdits(dir2), clusterSection(dir2, "node1"), map[string]string{
+		`    #url: "nats://user:password@nats1.example.com:4222,nats://nats2.example.com:4222"`: `    url: "nats://127.0.0.1:1"`,
+	})
+	config, err = LoadConfig(writeTestConfig(t, dir2, edits, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +287,7 @@ func TestClusterHistoryRequiresPebble(t *testing.T) {
 		"    persistent:\n        enabled: false": "    persistent:\n        enabled: true",
 		"    sqlite:\n        enabled: false":     "    sqlite:\n        enabled: true",
 	}
-	_, err := LoadConfig(writeTestConfig(t, dir, edits, clusterSection(dir, "node1")))
+	_, err := LoadConfig(writeTestConfig(t, dir, merge(edits, clusterSection(dir, "node1")), ""))
 	if err == nil || !strings.Contains(err.Error(), "requires the Pebble history backend") {
 		t.Errorf("expected the Pebble requirement error, got %v", err)
 	}

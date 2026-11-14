@@ -902,6 +902,55 @@ datastore:
         # block cache size in megabytes
         cache-size-mb: 64
 
+# clustering: run several ergo nodes as one network, connected over NATS.
+# currently this replicates persistent history between nodes (each node must
+# use the Pebble backend); clients on different nodes don't see each other yet.
+cluster:
+    enabled: false
+
+    # unique, stable name of this node (letters, digits, _ and -)
+    node-name: "node1"
+
+    # by default each node runs an embedded NATS server and the embedded servers
+    # connect to each other directly. alternatively, set `url` to use an external
+    # NATS deployment (with JetStream enabled) and ignore the `embedded` section:
+    #url: "nats://user:password@nats1.example.com:4222,nats://nats2.example.com:4222"
+    #creds-file: "/path/to/nats.creds"
+
+    embedded:
+        # directory for JetStream data
+        store-dir: "nats-data"
+        # all nodes must use the same cluster name
+        cluster-name: "ergo"
+        # address for connections from other nodes; leave empty to run a
+        # single node
+        #listen: "0.0.0.0:6222"
+        # the `listen` addresses of the other nodes
+        #routes:
+        #    - "nats-route://node2.example.com:6222"
+        #    - "nats-route://node3.example.com:6222"
+        # shared credentials nodes use to authenticate to each other. node
+        # traffic is not encrypted, so use a private network or a VPN
+        #route-username: "ergo"
+        #route-password: "change me"
+        # optional NATS client listener for monitoring and tooling; credentials
+        # are generated randomly at startup unless set here
+        #client-listen: "127.0.0.1:4222"
+        #client-username: "ops"
+        #client-password: "change me"
+
+    # JetStream replicas for cluster streams: 1, 3 or 5. with 3, the cluster
+    # survives losing one node (needs at least 3 nodes)
+    replicas: 1
+
+    history:
+        # replicate persistent history between nodes
+        enabled: true
+        # how far back the cluster stream retains history, which bounds how far
+        # back a new or long-offline node can catch up. defaults to the history
+        # expire-time; 0 with no expire-time keeps everything
+        #stream-max-age: 168h
+
 # languages config
 languages:
     # whether to load languages

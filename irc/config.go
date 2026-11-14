@@ -1803,10 +1803,8 @@ func LoadConfig(filename string) (config *Config, err error) {
 	if err = config.Cluster.Postprocess(); err != nil {
 		return nil, err
 	}
-	if config.Cluster.History.Enabled {
-		if !config.Cluster.Enabled {
-			return nil, fmt.Errorf("cluster.history.enabled requires cluster.enabled")
-		}
+	// cluster.history only matters when clustering is enabled
+	if config.Cluster.Enabled && config.Cluster.History.Enabled {
 		// replicated events may be delivered more than once; only the Pebble
 		// backend makes inserts idempotent
 		if config.History.Persistent.Enabled && !config.Datastore.Pebble.Enabled {

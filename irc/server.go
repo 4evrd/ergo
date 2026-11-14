@@ -101,6 +101,7 @@ type Server struct {
 	sqliteHistoryDB   *sqlite.SQLite
 	pebbleHistoryDB   *pebblehistory.Pebble
 	cluster           *cluster.Cluster
+	clusterNicks      *clusterNicks
 	historyDB         history.Database
 	torLimiter        connection_limits.TorLimiter
 	whoWas            WhoWasList
@@ -179,6 +180,9 @@ func (server *Server) Shutdown() {
 		server.logger.Error("shutdown", "Could not close history database", err.Error())
 	}
 
+	if server.clusterNicks != nil {
+		server.clusterNicks.close()
+	}
 	if server.cluster != nil {
 		server.cluster.Close()
 	}
@@ -717,6 +721,12 @@ func (server *Server) rehash() error {
 	return nil
 }
 
+func setIfChanged[T comparable](dst *T, value T) {
+	if *dst != value {
+		*dst = value
+	}
+}
+
 func (server *Server) applyConfig(config *Config) (err error) {
 	oldConfig := server.Config()
 	initial := oldConfig == nil
@@ -725,12 +735,14 @@ func (server *Server) applyConfig(config *Config) (err error) {
 		server.configFilename = config.Filename
 		server.name = config.Server.Name
 		server.nameCasefolded = config.Server.nameCasefolded
-		globalCasemappingSetting = config.Server.Casemapping
-		globalUtf8EnforcementSetting = config.Server.EnforceUtf8
-		MaxLineLen = config.Server.MaxLineLen
-		RegisterTimeout = config.Server.IdleTimeouts.Registration
-		PingTimeout = config.Server.IdleTimeouts.Ping
-		DisconnectTimeout = config.Server.IdleTimeouts.Disconnect
+		// these are process-wide; set them only if they differ, so that
+		// several servers in one process (as in tests) don't race on them
+		setIfChanged(&globalCasemappingSetting, config.Server.Casemapping)
+		setIfChanged(&globalUtf8EnforcementSetting, config.Server.EnforceUtf8)
+		setIfChanged(&MaxLineLen, config.Server.MaxLineLen)
+		setIfChanged(&RegisterTimeout, config.Server.IdleTimeouts.Registration)
+		setIfChanged(&PingTimeout, config.Server.IdleTimeouts.Ping)
+		setIfChanged(&DisconnectTimeout, config.Server.IdleTimeouts.Disconnect)
 	} else {
 		// enforce configs that can't be changed after launch:
 		if server.name != config.Server.Name {
@@ -1068,8 +1080,29 @@ func (server *Server) loadFromDatastore(config *Config) (err error) {
 	server.loadDLines()
 	server.loadKLines()
 
+	// join the cluster before restoring always-on clients, so that their
+	// nicks are claimed network-wide
+	if config.Cluster.Enabled {
+		server.cluster, err = cluster.Start(server.logger, config.Cluster)
+		if err != nil {
+			server.logger.Error("internal", "could not start cluster", err.Error())
+			return err
+		}
+		if config.Cluster.Nicks.Enabled {
+			registry := server.cluster.StartNicks()
+			if !registry.WaitReady(config.Cluster.Nicks.StartupWait) {
+				server.logger.Warning("cluster", "nick registry is not ready yet; nick changes will fail until it is")
+			}
+			server.clusterNicks = newClusterNicks(server, registry)
+		}
+	}
+
 	server.channels.Initialize(server, config)
 	server.accounts.Initialize(server)
+
+	if server.clusterNicks != nil {
+		server.clusterNicks.start(config.Cluster.Nicks.ReconcileInterval)
+	}
 
 	if config.Datastore.MySQL.Enabled {
 		server.mysqlHistoryDB, err = mysql.NewMySQLDatabase(server.logger, config.Datastore.MySQL)
@@ -1103,15 +1136,8 @@ func (server *Server) loadFromDatastore(config *Config) (err error) {
 		server.historyDB = history.NewNoopDatabase()
 	}
 
-	if config.Cluster.Enabled {
-		server.cluster, err = cluster.Start(server.logger, config.Cluster)
-		if err != nil {
-			server.logger.Error("internal", "could not start cluster", err.Error())
-			return err
-		}
-		if config.Cluster.History.Enabled && server.pebbleHistoryDB != nil {
-			server.historyDB = server.cluster.ReplicateHistory(server.historyDB)
-		}
+	if server.cluster != nil && config.Cluster.History.Enabled && server.pebbleHistoryDB != nil {
+		server.historyDB = server.cluster.ReplicateHistory(server.historyDB)
 	}
 
 	return nil

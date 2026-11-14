@@ -22,6 +22,13 @@ import (
 // loopback listener, no TLS, data under dir, and the given edits applied
 func writeTestConfig(t *testing.T, dir string, edits map[string]string, extra string) string {
 	t.Helper()
+	path, _ := writeTestConfigAddr(t, dir, edits, extra)
+	return path
+}
+
+// writeTestConfigAddr is writeTestConfig, also returning the IRC listener address
+func writeTestConfigAddr(t *testing.T, dir string, edits map[string]string, extra string) (string, string) {
+	t.Helper()
 	raw, err := os.ReadFile("../default.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +69,7 @@ func writeTestConfig(t *testing.T, dir string, edits map[string]string, extra st
 	if err := os.WriteFile(path, []byte(conf), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, addr
 }
 
 func pebbleEdits(dir string) map[string]string {
@@ -157,8 +164,26 @@ func preserveGlobals(t *testing.T) {
 	casemapping, utf8, maxLine := globalCasemappingSetting, globalUtf8EnforcementSetting, MaxLineLen
 	register, ping, disconnect := RegisterTimeout, PingTimeout, DisconnectTimeout
 	t.Cleanup(func() {
-		globalCasemappingSetting, globalUtf8EnforcementSetting, MaxLineLen = casemapping, utf8, maxLine
-		RegisterTimeout, PingTimeout, DisconnectTimeout = register, ping, disconnect
+		// only write what changed: an unconditional write would race with
+		// goroutines of servers that are still winding down
+		if globalCasemappingSetting != casemapping {
+			globalCasemappingSetting = casemapping
+		}
+		if globalUtf8EnforcementSetting != utf8 {
+			globalUtf8EnforcementSetting = utf8
+		}
+		if MaxLineLen != maxLine {
+			MaxLineLen = maxLine
+		}
+		if RegisterTimeout != register {
+			RegisterTimeout = register
+		}
+		if PingTimeout != ping {
+			PingTimeout = ping
+		}
+		if DisconnectTimeout != disconnect {
+			DisconnectTimeout = disconnect
+		}
 	})
 }
 
@@ -172,12 +197,16 @@ func startTestServer(t *testing.T, dir string, configPath string) *Server {
 	if err := InitDB(config.Datastore.Path); err != nil {
 		t.Fatal(err)
 	}
-	lm, _ := logger.NewManager(nil)
-	server, err := NewServer(config, lm)
+	server, err := NewServer(config, quietTestLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return server
+}
+
+func quietTestLogger() *logger.Manager {
+	lm, _ := logger.NewManager(nil)
+	return lm
 }
 
 func TestServerWithPebbleAndCluster(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
@@ -158,10 +159,23 @@ func (c *Cluster) startEmbedded() error {
 	if err != nil {
 		return fmt.Errorf("could not create embedded NATS server: %w", err)
 	}
-	ns.SetLoggerV2(natsLogger{c.logger}, false, false, false)
+	log := &natsLogger{logger: c.logger}
+	ns.SetLoggerV2(log, false, false, false)
 	go ns.Start()
-	if !ns.ReadyForConnections(startupTimeout) {
-		return fmt.Errorf("embedded NATS server did not start within %v", startupTimeout)
+	deadline := time.Now().Add(startupTimeout)
+	for !ns.ReadyForConnections(100 * time.Millisecond) {
+		if fatal := log.fatalError(); fatal != "" {
+			ns.Shutdown()
+			return fmt.Errorf("embedded NATS server failed to start: %s", fatal)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("embedded NATS server did not start within %v", startupTimeout)
+		}
+	}
+	// JetStream can fail after the listeners are up
+	if fatal := log.fatalError(); fatal != "" {
+		ns.Shutdown()
+		return fmt.Errorf("embedded NATS server failed to start: %s", fatal)
 	}
 	c.ns = ns
 	if e.Listen != "" {
@@ -184,26 +198,43 @@ func (c *Cluster) Close() {
 
 type natsLogger struct {
 	logger *logger.Manager
+
+	mu    sync.Mutex
+	fatal string
 }
 
-func (l natsLogger) Noticef(format string, v ...any) {
+func (l *natsLogger) fatalError() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fatal
+}
+
+func (l *natsLogger) Noticef(format string, v ...any) {
 	l.logger.Debug("nats", fmt.Sprintf(format, v...))
 }
 
-func (l natsLogger) Warnf(format string, v ...any) {
+func (l *natsLogger) Warnf(format string, v ...any) {
 	l.logger.Warning("nats", fmt.Sprintf(format, v...))
 }
 
-func (l natsLogger) Fatalf(format string, v ...any) {
-	l.logger.Error("nats", "fatal:", fmt.Sprintf(format, v...))
+// Fatalf records the error so startup can fail; nats-server expects Fatalf
+// not to return, but the embedded server must not exit the ergo process
+func (l *natsLogger) Fatalf(format string, v ...any) {
+	msg := fmt.Sprintf(format, v...)
+	l.logger.Error("nats", "fatal:", msg)
+	l.mu.Lock()
+	if l.fatal == "" {
+		l.fatal = msg
+	}
+	l.mu.Unlock()
 }
 
-func (l natsLogger) Errorf(format string, v ...any) {
+func (l *natsLogger) Errorf(format string, v ...any) {
 	l.logger.Error("nats", fmt.Sprintf(format, v...))
 }
 
-func (l natsLogger) Debugf(format string, v ...any) {
+func (l *natsLogger) Debugf(format string, v ...any) {
 	l.logger.Debug("nats", fmt.Sprintf(format, v...))
 }
 
-func (l natsLogger) Tracef(format string, v ...any) {}
+func (l *natsLogger) Tracef(format string, v ...any) {}
